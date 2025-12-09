@@ -5,7 +5,7 @@ import os
 
 security = HTTPBearer()
 
-SECRET_KEY = os.getenv("ADMIN_JWT_SECRET", "change-me-to-something-very-strong")  # set this in Render
+SECRET_KEY = os.getenv("ADMIN_JWT_SECRET", "my_very_long_random_secret_1234567890")  # set this in Render
 ALGORITHM = "HS256"
 
 def verify_admin_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
