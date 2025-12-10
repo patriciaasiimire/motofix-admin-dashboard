@@ -1,21 +1,11 @@
 # app/routers/admin.py
 from fastapi import APIRouter, Depends, Query
 from typing import Optional
-import os
-import asyncpg
 from datetime import datetime
 from ..deps import verify_admin_token  # JWT protection
+from ..db import get_db
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-async def get_db():
-    conn = await asyncpg.connect(DATABASE_URL)
-    try:
-        yield conn
-    finally:
-        await conn.close()
 
 
 # ────────────────────────── SERVICE REQUESTS ──────────────────────────
@@ -154,3 +144,29 @@ async def dashboard_stats(db = Depends(get_db), admin = Depends(verify_admin_tok
     stats["motofix_is_unstoppable"] = True
 
     return stats
+
+
+# ───────────────────────────── REVENUE CHART ─────────────────────────────
+@router.get("/dashboard/revenue-chart")
+async def revenue_chart(limit: int = 30, db = Depends(get_db), admin = Depends(verify_admin_token)):
+    """
+    Return recent daily revenue points for successful collection transactions.
+    Aggregates `payments` by date (YYYY-MM-DD) and returns up to `limit`
+    days in ascending order (oldest -> newest).
+    """
+    query = """
+        SELECT to_char(created_at::date, 'YYYY-MM-DD') AS date,
+               COALESCE(SUM(amount), 0) AS amount
+        FROM payments
+        WHERE type = 'collection' AND status = 'success'
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT $1
+    """
+    rows = await db.fetch(query, limit)
+    # rows come back newest-first; transform and reverse for charting (oldest-first)
+    data = [{
+        "date": r["date"],
+        "amount": float(r["amount"] or 0)
+    } for r in rows]
+    return list(reversed(data))
