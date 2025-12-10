@@ -1,4 +1,5 @@
 # app/routers/admin.py
+
 from fastapi import APIRouter, Depends, Query
 from typing import Optional
 from datetime import datetime
@@ -27,7 +28,6 @@ async def list_requests(
         )
     return [dict(r) for r in rows]
 
-
 # ───────────────────────────── MECHANICS ──────────────────────────────
 @router.get("/mechanics")
 async def list_mechanics(
@@ -45,6 +45,59 @@ async def list_mechanics(
             "SELECT id, phone, name, location, is_verified, rating, jobs_completed, created_at FROM mechanics"
         )
     return [dict(r) for r in rows]
+
+@router.post("/mechanics")
+async def add_mechanic(
+    mechanic: dict,
+    db = Depends(get_db),
+    admin = Depends(verify_admin_token)
+):
+    query = """
+        INSERT INTO mechanics (phone, name, location, is_verified, rating, jobs_completed)
+        VALUES ($1, $2, $3, $4, 0, 0)
+        RETURNING *
+    """
+    result = await db.fetchrow(query, mechanic.get("phone"), mechanic.get("name"), mechanic.get("location"), mechanic.get("is_verified", False))
+    return dict(result)
+
+@router.patch("/mechanics/{mechanic_id}")
+async def update_mechanic(
+    mechanic_id: int,
+    updates: dict,
+    db = Depends(get_db),
+    admin = Depends(verify_admin_token)
+):
+    allowed_fields = ["name", "phone", "location", "is_verified", "rating", "jobs_completed"]
+    set_clauses = []
+    params = [mechanic_id]
+    for idx, field in enumerate(allowed_fields, start=2):
+        if field in updates:
+            set_clauses.append(f"{field} = ${idx}")
+            params.append(updates[field])
+    if not set_clauses:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    query = f"""
+        UPDATE mechanics
+        SET {', '.join(set_clauses)}
+        WHERE id = $1
+        RETURNING *
+    """
+    result = await db.fetchrow(query, *params)
+    if not result:
+        raise HTTPException(status_code=404, detail="Mechanic not found")
+    return dict(result)
+
+@router.delete("/mechanics/{mechanic_id}")
+async def delete_mechanic(
+    mechanic_id: int,
+    db = Depends(get_db),
+    admin = Depends(verify_admin_token)
+):
+    query = "DELETE FROM mechanics WHERE id = $1 RETURNING id"
+    result = await db.fetchval(query, mechanic_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Mechanic not found")
+    return {"detail": "Mechanic deleted successfully"}
 
 
 # ───────────────────────────── PAYMENTS WITH PAGINATION ───────────────────────────────

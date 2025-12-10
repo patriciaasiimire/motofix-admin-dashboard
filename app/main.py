@@ -1,5 +1,8 @@
+# app/main.py
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from .routers import admin
 import os
 
 from app.routers import admin  # your existing admin router
