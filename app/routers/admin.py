@@ -52,28 +52,53 @@ async def list_requests(
 
 @router.get("/mechanics")
 async def list_mechanics(
-    verified: Optional[bool] = None,
+    verified: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(10, ge=1, le=200),
     db=Depends(get_db),
     admin=Depends(verify_admin_token)
 ):
-    if verified is not None:
-        rows = await db.fetch(
-            """
-            SELECT id, phone, name, location, is_verified, rating, jobs_completed, created_at
-            FROM mechanics
-            WHERE is_verified = $1
-            """,
-            verified
-        )
-    else:
-        rows = await db.fetch(
-            """
-            SELECT id, phone, name, location, is_verified, rating, jobs_completed, created_at
-            FROM mechanics
-            """
-        )
+    """
+    Return mechanics with optional search and pagination.
+    Supports filtering by verification status and fuzzy match on name/phone/location.
+    """
+    offset = (page - 1) * pageSize
+    params = []
+    conditions = []
 
-    return [dict(r) for r in rows]
+    if verified is not None:
+        conditions.append(f"is_verified = ${len(params) + 1}")
+        params.append(verified)
+
+    if search:
+        like_term = f"%{search.lower()}%"
+        conditions.append(
+            f"(lower(name) LIKE ${len(params) + 1} OR lower(phone) LIKE ${len(params) + 1} OR lower(location) LIKE ${len(params) + 1})"
+        )
+        params.append(like_term)
+
+    where_sql = " WHERE " + " AND ".join(conditions) if conditions else ""
+
+    total = await db.fetchval(f"SELECT COUNT(*) FROM mechanics{where_sql}", *params)
+
+    query = f"""
+        SELECT id, phone, name, location, is_verified, rating, jobs_completed, created_at
+        FROM mechanics
+        {where_sql}
+        ORDER BY created_at DESC
+        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
+    """
+    rows = await db.fetch(query, *params, pageSize, offset)
+
+    data = [dict(r) for r in rows]
+    return {
+        "data": data,
+        "page": page,
+        "pageSize": pageSize,
+        "total": total,
+        "totalPages": (total + pageSize - 1) // pageSize if total is not None else 0,
+    }
 
 
 @router.post("/mechanics")
