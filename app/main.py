@@ -14,25 +14,23 @@ app = FastAPI(
 )
 
 # ─────────────── CORS CONFIGURATION ───────────────
-# Default origins from environment variable (comma-separated)
-origins = os.getenv("CORS_ORIGINS", "").split(",")
+# Parse additional origins from environment variable (comma-separated)
+env_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 
 # Always include production and common dev URLs
-default_origins = [
-    "https://motofix-control-center.onrender.com",  # production frontend
-    "http://localhost:8080",                        # localhost dev
+allowed_origins = [
+    "https://motofix-control-center.onrender.com",  # Production frontend
     "http://localhost:5173",                        # Vite dev server
-]
+    "http://localhost:8080",                       # Other local dev if needed
+] + env_origins
 
-# Merge and remove empty strings
-origins = list(set([o for o in origins + default_origins if o]))
-
-allow_origin_regex = r"https?://(.+\.)?motofix-control-center\.onrender\.com"
+# Remove duplicates while preserving order
+seen = set()
+allowed_origins = [x for x in allowed_origins if not (x in seen or seen.add(x))]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins or ["https://motofix-control-center.onrender.com"],
-    allow_origin_regex=allow_origin_regex,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
