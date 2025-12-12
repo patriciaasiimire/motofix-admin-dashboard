@@ -1,6 +1,6 @@
 import os
 import asyncpg
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from typing import AsyncGenerator
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -17,9 +17,13 @@ async def close_db_pool(app: FastAPI):
         await pool.close()
 
 # Dependency to acquire a connection from the pool and yield it
-async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
-    pool = getattr(__import__("app.main").app.state, "_db_pool", None)
-    # import here to avoid circular import issues in some layouts. Adjust if you centralize main.
+async def get_db(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
+    """
+    Acquire a DB connection from the app-wide pool stored on app.state.
+    Using the Request object avoids fragile __import__ lookups that can fail in production.
+    """
+    pool = getattr(request.app.state, "_db_pool", None)
+
     if pool is None:
         # Read DATABASE_URL at call time so tests can monkeypatch env before calling
         local_db_url = os.getenv("DATABASE_URL")
