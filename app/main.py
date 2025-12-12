@@ -2,11 +2,9 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import admin
 import os
 
-from app.routers import admin  # your existing admin router
-from app.routers import auth
+from app.routers import admin, auth
 from app.db import init_db_pool, close_db_pool
 
 app = FastAPI(
@@ -15,9 +13,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS so the frontend (local dev or deployed) can call the API
-# Allow origins from env var `CORS_ORIGINS` comma-separated, fallback to localhost dev port
-origins = os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")
+# ─────────────── CORS CONFIGURATION ───────────────
+# Default origins from environment variable (comma-separated)
+origins = os.getenv("CORS_ORIGINS", "").split(",")
+
+# Always include production and common dev URLs
+default_origins = [
+    "https://motofix-control-center.onrender.com",  # production frontend
+    "http://localhost:8080",                        # localhost dev
+    "http://localhost:5173",                        # Vite dev server
+]
+
+# Merge and remove empty strings
+origins = list(set([o for o in origins + default_origins if o]))
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -26,11 +35,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# ─────────────── INCLUDE ROUTERS ───────────────
 app.include_router(auth.router)      # /api/login
 app.include_router(admin.router)     # /admin/*
 
-# Startup/shutdown to manage DB pool
+# ─────────────── STARTUP / SHUTDOWN ───────────────
 @app.on_event("startup")
 async def on_startup():
     await init_db_pool(app)
@@ -39,6 +48,7 @@ async def on_startup():
 async def on_shutdown():
     await close_db_pool(app)
 
+# ─────────────── ROOT ───────────────
 @app.get("/")
 def root():
     return {"message": "Motofix Admin API – Protected. Welcome boss"}
