@@ -17,7 +17,7 @@ app = FastAPI(
 
 # Configure CORS so the frontend (local dev or deployed) can call the API
 # Allow origins from env var `CORS_ORIGINS` comma-separated, fallback to localhost dev port
-origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+origins = os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,

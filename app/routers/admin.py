@@ -1,21 +1,40 @@
-# app/routers/admin.py
-
-from fastapi import APIRouter, Depends, Query
-from typing import Optional
+from fastapi import APIRouter, Depends, Query, HTTPException
+from typing import Optional, List
 from datetime import datetime
-from ..deps import verify_admin_token  # JWT protection
+from pydantic import BaseModel, Field
+
+from ..deps import verify_admin_token
 from ..db import get_db
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
+# ──────────────────────────── MODELS ────────────────────────────
+
+class MechanicCreate(BaseModel):
+    phone: str
+    name: str
+    location: Optional[str] = None
+    is_verified: bool = False
+
+
+class MechanicUpdate(BaseModel):
+    phone: Optional[str] = None
+    name: Optional[str] = None
+    location: Optional[str] = None
+    is_verified: Optional[bool] = None
+    rating: Optional[int] = None
+    jobs_completed: Optional[int] = None
+
+
 # ────────────────────────── SERVICE REQUESTS ──────────────────────────
+
 @router.get("/requests")
 async def list_requests(
     status: Optional[str] = Query(None),
     limit: int = 100,
-    db = Depends(get_db),
-    admin = Depends(verify_admin_token)
+    db=Depends(get_db),
+    admin=Depends(verify_admin_token)
 ):
     if status:
         rows = await db.fetch(
@@ -28,126 +47,163 @@ async def list_requests(
         )
     return [dict(r) for r in rows]
 
+
 # ───────────────────────────── MECHANICS ──────────────────────────────
+
 @router.get("/mechanics")
 async def list_mechanics(
     verified: Optional[bool] = None,
-    db = Depends(get_db),
-    admin = Depends(verify_admin_token)
+    db=Depends(get_db),
+    admin=Depends(verify_admin_token)
 ):
     if verified is not None:
         rows = await db.fetch(
-            "SELECT id, phone, name, location, is_verified, rating, jobs_completed, created_at FROM mechanics WHERE is_verified = $1",
+            """
+            SELECT id, phone, name, location, is_verified, rating, jobs_completed, created_at
+            FROM mechanics
+            WHERE is_verified = $1
+            """,
             verified
         )
     else:
         rows = await db.fetch(
-            "SELECT id, phone, name, location, is_verified, rating, jobs_completed, created_at FROM mechanics"
+            """
+            SELECT id, phone, name, location, is_verified, rating, jobs_completed, created_at
+            FROM mechanics
+            """
         )
+
     return [dict(r) for r in rows]
+
 
 @router.post("/mechanics")
 async def add_mechanic(
-    mechanic: dict,
-    db = Depends(get_db),
-    admin = Depends(verify_admin_token)
+    mechanic: MechanicCreate,
+    db=Depends(get_db),
+    admin=Depends(verify_admin_token)
 ):
+    # Normalize phone
+    phone = mechanic.phone.strip().replace(" ", "").replace("-", "")
+    if phone.startswith("0"):
+        phone = "+256" + phone[1:]
+    elif not phone.startswith("+"):
+        phone = "+256" + phone
+
     query = """
         INSERT INTO mechanics (phone, name, location, is_verified, rating, jobs_completed)
         VALUES ($1, $2, $3, $4, 0, 0)
         RETURNING *
     """
-    result = await db.fetchrow(query, mechanic.get("phone"), mechanic.get("name"), mechanic.get("location"), mechanic.get("is_verified", False))
+
+    result = await db.fetchrow(
+        query,
+        phone,
+        mechanic.name,
+        mechanic.location,
+        mechanic.is_verified
+    )
+
     return dict(result)
+
 
 @router.patch("/mechanics/{mechanic_id}")
 async def update_mechanic(
     mechanic_id: int,
-    updates: dict,
-    db = Depends(get_db),
-    admin = Depends(verify_admin_token)
+    updates: MechanicUpdate,
+    db=Depends(get_db),
+    admin=Depends(verify_admin_token)
 ):
-    allowed_fields = ["name", "phone", "location", "is_verified", "rating", "jobs_completed"]
-    set_clauses = []
-    params = [mechanic_id]
-    for idx, field in enumerate(allowed_fields, start=2):
-        if field in updates:
-            set_clauses.append(f"{field} = ${idx}")
-            params.append(updates[field])
-    if not set_clauses:
+    update_data = updates.dict(exclude_unset=True)
+
+    if not update_data:
         raise HTTPException(status_code=400, detail="No valid fields to update")
+
+    # Build dynamic SQL
+    set_parts = []
+    params = []
+
+    for idx, (key, value) in enumerate(update_data.items(), start=1):
+        set_parts.append(f"{key} = ${idx}")
+        params.append(value)
+
+    params.append(mechanic_id)
+
     query = f"""
         UPDATE mechanics
-        SET {', '.join(set_clauses)}
-        WHERE id = $1
+        SET {', '.join(set_parts)}
+        WHERE id = ${len(params)}
         RETURNING *
     """
+
     result = await db.fetchrow(query, *params)
+
     if not result:
         raise HTTPException(status_code=404, detail="Mechanic not found")
+
     return dict(result)
+
 
 @router.delete("/mechanics/{mechanic_id}")
 async def delete_mechanic(
     mechanic_id: int,
-    db = Depends(get_db),
-    admin = Depends(verify_admin_token)
+    db=Depends(get_db),
+    admin=Depends(verify_admin_token)
 ):
-    query = "DELETE FROM mechanics WHERE id = $1 RETURNING id"
-    result = await db.fetchval(query, mechanic_id)
+    result = await db.fetchval("DELETE FROM mechanics WHERE id = $1 RETURNING id", mechanic_id)
+
     if not result:
         raise HTTPException(status_code=404, detail="Mechanic not found")
+
     return {"detail": "Mechanic deleted successfully"}
 
 
 # ───────────────────────────── PAYMENTS WITH PAGINATION ───────────────────────────────
+
 @router.get("/payments")
 async def list_payments(
-    phone: Optional[str] = Query(None, description="Search by phone number (e.g. +256758969973 or 0758969973)"),
-    type: Optional[str] = Query(None, description="collection or payout"),
-    status: Optional[str] = Query(None, description="success, pending, failed"),
-    page: int = Query(1, ge=1, description="Page number (starts at 1)"),
-    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
-    db = Depends(get_db),
-    admin = Depends(verify_admin_token)
+    phone: Optional[str] = Query(None),
+    type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    db=Depends(get_db),
+    admin=Depends(verify_admin_token)
 ):
     offset = (page - 1) * page_size
     params = []
     conditions = []
 
-    # Phone search – smart: works with or without +, with 0 or 07
+    # Phone normalization
     if phone:
-        clean_phone = phone.strip().replace(" ", "").replace("-", "")
-        if clean_phone.startswith("0"):
-            clean_phone = "+256" + clean_phone[1:]
-        elif not clean_phone.startswith("+"):
-            clean_phone = "+256" + clean_phone
-
-        conditions.append(f"phone = ${len(params)+1}")
-        params.append(clean_phone)
+        clean = phone.strip().replace(" ", "").replace("-", "")
+        if clean.startswith("0"):
+            clean = "+256" + clean[1:]
+        elif not clean.startswith("+"):
+            clean = "+256" + clean
+        conditions.append(f"phone = ${len(params) + 1}")
+        params.append(clean)
 
     if type:
-        conditions.append(f"type = ${len(params)+1}")
+        conditions.append(f"type = ${len(params) + 1}")
         params.append(type)
+
     if status:
-        conditions.append(f"status = ${len(params)+1}")
+        conditions.append(f"status = ${len(params) + 1}")
         params.append(status)
 
-    where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    where_sql = " WHERE " + " AND ".join(conditions) if conditions else ""
 
-    # Total count
-    total = await db.fetchval("SELECT COUNT(*) FROM payments" + where_clause, *params) or 0
+    total = await db.fetchval(f"SELECT COUNT(*) FROM payments{where_sql}", *params)
 
-    # Results
     query = f"""
-        SELECT 
-            id, transaction_id, phone, amount, type, status, 
-            reason, provider, metadata, created_at, updated_at
+        SELECT id, transaction_id, phone, amount, type, status, reason, provider, metadata,
+               created_at, updated_at
         FROM payments
-        {where_clause}
+        {where_sql}
         ORDER BY created_at DESC
         LIMIT ${len(params)+1} OFFSET ${len(params)+2}
     """
+
     params.extend([page_size, offset])
     rows = await db.fetch(query, *params)
 
@@ -161,36 +217,42 @@ async def list_payments(
             "has_next": page * page_size < total,
             "has_prev": page > 1
         },
-        "search": {
-            "phone": phone,
-            "type": type,
-            "status": status
-        },
-        "tip": "Phone search works with +256, 0, or 07 — we normalize it automatically"
+        "search": {"phone": phone, "type": type, "status": status}
     }
 
 
 # ────────────────────────────── STATS ─────────────────────────────────
+
 @router.get("/stats")
-async def dashboard_stats(db = Depends(get_db), admin = Depends(verify_admin_token)):
+async def dashboard_stats(
+    db=Depends(get_db),
+    admin=Depends(verify_admin_token)
+):
     stats = {}
 
-    # Requests
     stats["total_requests"] = await db.fetchval("SELECT COUNT(*) FROM service_requests") or 0
-    stats["completed_jobs"] = await db.fetchval("SELECT COUNT(*) FROM service_requests WHERE status = 'completed'") or 0
-    stats["pending_jobs"] = await db.fetchval("SELECT COUNT(*) FROM service_requests WHERE status IN ('pending', 'accepted')") or 0
+    stats["completed_jobs"] = await db.fetchval(
+        "SELECT COUNT(*) FROM service_requests WHERE status = 'completed'"
+    ) or 0
+    stats["pending_jobs"] = await db.fetchval(
+        "SELECT COUNT(*) FROM service_requests WHERE status IN ('pending', 'accepted')"
+    ) or 0
 
-    # Mechanics
     stats["total_mechanics"] = await db.fetchval("SELECT COUNT(*) FROM mechanics") or 0
-    stats["verified_mechanics"] = await db.fetchval("SELECT COUNT(*) FROM mechanics WHERE is_verified = true") or 0
+    stats["verified_mechanics"] = await db.fetchval(
+        "SELECT COUNT(*) FROM mechanics WHERE is_verified = true"
+    ) or 0
 
-    # Money — safe even if no payments yet
-    collected = await db.fetchval("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE type = 'collection' AND status = 'success'") or 0
-    paid_out = await db.fetchval("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE type = 'payout' AND status = 'success'") or 0
+    collected = await db.fetchval(
+        "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE type='collection' AND status='success'"
+    )
+    paid_out = await db.fetchval(
+        "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE type='payout' AND status='success'"
+    )
 
-    stats["revenue_collected_ugx"] = float(collected)
-    stats["paid_to_mechanics_ugx"] = float(paid_out)
-    stats["profit_ugx"] = float(collected - paid_out)
+    stats["revenue_collected_ugx"] = float(collected or 0)
+    stats["paid_to_mechanics_ugx"] = float(paid_out or 0)
+    stats["profit_ugx"] = float((collected or 0) - (paid_out or 0))
     stats["total_transactions"] = await db.fetchval("SELECT COUNT(*) FROM payments") or 0
 
     stats["as_of"] = datetime.utcnow().isoformat() + "Z"
@@ -200,13 +262,13 @@ async def dashboard_stats(db = Depends(get_db), admin = Depends(verify_admin_tok
 
 
 # ───────────────────────────── REVENUE CHART ─────────────────────────────
+
 @router.get("/dashboard/revenue-chart")
-async def revenue_chart(limit: int = 30, db = Depends(get_db), admin = Depends(verify_admin_token)):
-    """
-    Return recent daily revenue points for successful collection transactions.
-    Aggregates `payments` by date (YYYY-MM-DD) and returns up to `limit`
-    days in ascending order (oldest -> newest).
-    """
+async def revenue_chart(
+    limit: int = 30,
+    db=Depends(get_db),
+    admin=Depends(verify_admin_token)
+):
     query = """
         SELECT to_char(created_at::date, 'YYYY-MM-DD') AS date,
                COALESCE(SUM(amount), 0) AS amount
@@ -216,10 +278,12 @@ async def revenue_chart(limit: int = 30, db = Depends(get_db), admin = Depends(v
         ORDER BY date DESC
         LIMIT $1
     """
+
     rows = await db.fetch(query, limit)
-    # rows come back newest-first; transform and reverse for charting (oldest-first)
-    data = [{
-        "date": r["date"],
-        "amount": float(r["amount"] or 0)
-    } for r in rows]
+
+    data = [
+        {"date": r["date"], "amount": float(r["amount"])}
+        for r in rows
+    ]
+
     return list(reversed(data))
