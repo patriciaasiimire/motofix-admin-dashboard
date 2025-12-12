@@ -27,9 +27,12 @@ default_origins = [
 # Merge and remove empty strings
 origins = list(set([o for o in origins + default_origins if o]))
 
+allow_origin_regex = r"https?://(.+\.)?motofix-control-center\.onrender\.com"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins or ["https://motofix-control-center.onrender.com"],
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
